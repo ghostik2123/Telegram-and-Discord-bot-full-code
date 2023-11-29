@@ -1,117 +1,75 @@
 from keep_alive import keep_alive
 keep_alive()
-# import
-import datetime
+#import
+import discord
 import os
-from discord.ext import commands
-from discord import Intents
 import telebot
-import asyncio
+from datetime import datetime
+
+#telegram code 
+token = os.environ['token']
+TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
+CHAT_ID = ['2023014289', '6697778630', '2106774730']
+
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
+def send_file_to_telegram(file_path):
+    try:
+        with open(file_path, 'rb') as file:
+            for chat_id in CHAT_ID:
+                bot.send_document(chat_id, file)
+    except Exception as e:
+        print(f'Ошибка отправки файла в Telegram: {e}')
+
+file_size = os.path.getsize('log.txt')  # Получаем размер файла
+if file_size >= 100 * 1024:  # Если размер файла превышает 100 МБ (100кб)
+    send_file_to_telegram('log.txt')  # Отправляем файл в телеграм
+    open('log.txt', 'w').close()  # Очищаем файл после отправки
+
+intents = discord.Intents.all()  # Включаем все возможные события
+client = discord.Client(intents=intents)
 
 
-DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = '2023014289'
-
-voice_sessions = {}
-
-intents = Intents.default()
-intents.message_content = True  # Enable receiving message content
-
-discord_bot = commands.Bot(command_prefix='!', intents=intents)
-telegram_bot = telebot.TeleBot(TELEGRAM_TOKEN)
-
-
-@discord_bot.event
-async def on_ready():
-		print('Bot is ready.')
-
-
-# Events
-
-@discord_bot.event
-async def on_message(message):
-		author_name = message.author.name  # Get the name of the message author
-		server_name = message.guild.name  # Get the name of the server
-		channel_name = message.channel.name  # Get the name of the channel
-
-		# Format the text for sending to Telegram
-		text = f'Ник: {author_name}\nСервер: {server_name}\nКанал: {channel_name}\nСообщение: {message.content}'
-
-		# Send the message to Telegram with Markdown formatting
-		telegram_bot.send_message(TELEGRAM_CHAT_ID, f'```\n{text}\n```', parse_mode='Markdown')
-
-		# Check for attachments
-		if message.attachments:
-				attachments = "\nВложения:"
-				for attachment in message.attachments:
-						attachments += f"\n- {attachment.url}"
-				text += attachments
-
-		telegram_bot.send_message(TELEGRAM_CHAT_ID, text, parse_mode='Markdown')
-		await discord_bot.process_commands(message)
-
-# voice connect and disconnect
-@discord_bot.event
+## Обновленное событие для логирования входа в голосовой канал
+@client.event
 async def on_voice_state_update(member, before, after):
-		if before.channel is None and after.channel is not None:
-				# Member joined a voice channel
-				author_name = member.name
-				server_name = member.guild.name
-				channel_name = after.channel.name
-				start_time = datetime.datetime.now()
-				voice_sessions[member.id] = start_time
-				text = f'Ник: {author_name}\nСервер: {server_name}\nКанал: {channel_name}\nПрисоединился к голосовому каналу в {start_time}'
-				await telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f'\n{text}\n', parse_mode='Markdown')
-		elif before.channel is not None and after.channel is None:
-				# Member left a voice channel
-				start_time = voice_sessions.get(member.id)
-				if start_time:
-						end_time = datetime.datetime.now()
-						duration = end_time - start_time
-						del voice_sessions[member.id]
-						duration_seconds = duration.total_seconds()
-						duration_hours = int(duration_seconds // 3600)
-						duration_minutes = int((duration_seconds % 3600) // 60)
-						duration_seconds = duration_seconds % 60
-						duration_formatted = f'{duration_hours}:{duration_minutes:02d}:{duration_seconds:.2f}'
-						author_name = member.name
-						server_name = member.guild.name
-						channel_name = before.channel.name
-						text = f'Ник: {author_name}\nСервер: {server_name}\nКанал: {channel_name}\nПокинул голосовой канал в {end_time}.\nПродолжительность: {duration_formatted}'
-						await telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f'```\n{text}\n```')
+    if before.channel != after.channel:  # Проверяем, изменился ли голосовой канал
+        if after.channel:  # Если член зашел в голосовой канал
+            log_message(f'{member} зашел в голосовой канал {after.channel} на сервере {after.channel.guild}.')
+            if member.bot:
+                return
+        else:  # Если член вышел из голосового канала
+            log_message(f'{member} покинул голосовой канал {before.channel} на сервере {before.channel.guild}.')
+            if member.bot:
+                return
+@client.event
+async def on_ready():
+    print(f'вошли в систему под именем {client.user}')
 
-@discord_bot.event
+@client.event
 async def on_message(message):
-		if message.author.bot:
-				# Ignore if the message is sent by a bot
-				return
+    # Логируем все сообщения в текстовый файл
+    log_message(f'{message.guild} #{message.channel} - {message.author}: {message.content}')
 
-		author_name = message.author.name  # Get the name of the message author
-		server_name = message.guild.name  # Get the name of the server
-		channel_name = message.channel.name  # Get the name of the channel
+@client.event
+async def on_member_update(before, after):
+    # Логируем изменения статуса участников
+    log_message(f'{after.guild} - {after.name} изменил статус: {before.status} -> {after.status}')
 
-		# Format the text for sending to Telegram
-		text = f'Ник: {author_name}\nСервер: {server_name}\nКанал: {channel_name}\nСообщение: {message.content}'
-		if message.attachments:
-				attachments = "\nВложения:"
-				for attachment in message.attachments:
-						attachments += f"\n- {attachment.url}"
-				text += attachments
+@client.event
+async def on_message_delete(message):
+    # Логируем удаленные сообщения
+    log_message(f'{message.guild} #{message.channel} - {message.author} удалил сообщение: {message.content}')
+@client.event
+async def on_message_edit(before, after):
+    # Логируем отредактированные сообщения
+    log_message(f'{before.guild} #{before.channel} - {before.author} изменил сообщение: {before.content} -> {after.content}')
 
-		await telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f'\n{text}\n', parse_mode='Markdown')
-		await discord_bot.process_commands(message)
+def log_message(text):
+    log_path = 'log.txt'
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f'[{timestamp}] {text}\n'
+    with open(log_path, 'a', encoding='utf-8') as log_file:
+        log_file.write(log_entry)
 
-# Commands
-
-@discord_bot.command()
-async def servers(ctx):
-		bot = ctx.bot
-		guilds = bot.guilds
-		for guild in guilds:
-				members = guild.members
-				member_names = [member.name for member in members]
-				text = f"Сервер: {guild.name}\nУчастники: {', '.join(member_names)}"
-				await ctx.send(f'\n{text}\n', parse_mode='Markdown')
-
-discord_bot.run(DISCORD_TOKEN)
+client.run(token)
