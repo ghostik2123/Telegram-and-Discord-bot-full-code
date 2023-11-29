@@ -4,18 +4,21 @@ keep_alive()
 import os
 import telebot
 from telebot import types
-from datetime import datetime
+from datetime import datetime, timedelta
 import discord
 from discord.ext import commands
+import asyncio
 
 intents = discord.Intents.all()
 client = commands.Bot(command_prefix='/', intents=intents)
 #telegram code 
 token = os.environ['token']
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-trusted_users = ['2023014289']
+trusted_users = '2023014289'
 CHAT_ID = ['2023014289']
-your_chat_id = ['2023014289']
+banned_users = []
+timeouts = {}
+
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
@@ -32,21 +35,6 @@ if file_size >= 100 * 1024:  # Если размер файла превышае
     send_file_to_telegram('log.txt')
     open('log.txt', 'w').close()
 
-
-@bot.message_handler(commands=['help'])
-def send_help(message):
-    help_text = """
-    Доступные команды:
-    /getfile - Получить файл log.txt, если его размер больше 4KB и ваш chat_id добавлен в список.
-    /addchatid [chat_id] - Добавить новый chat_id в список (только для доверенных пользователей).
-    /getchatids - Получить список всех chat_id (только для доверенных пользователей).
-    /removechatid [chat_id] - Удалить chat_id из списка (только для доверенных пользователей).
-    /getmyid - Получить ваш chat_id.
-    /requestadd - Отправить запрос на добавление вашего chat_id в список.
-    """
-    bot.reply_to(message, help_text)
-
-
 @bot.message_handler(commands=['requestadd'])
 def request_add(message):
         request_text = f'Пользователь {message.from_user.username} ({message.chat.id}) хочет добавить себя в список.'
@@ -57,21 +45,118 @@ def request_add(message):
                 types.InlineKeyboardButton("Игнорировать", callback_data=f'ignore_{message.chat.id}')
         )
 
-        bot.send_message(your_chat_id, request_text, reply_markup=markup)
+        bot.send_message(trusted_users, request_text, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
-        action, chat_id = call.data.split('_')
-        if action == 'add':
-                if chat_id not in CHAT_ID:
-                        CHAT_ID.append(chat_id)
-                        bot.answer_callback_query(call.id, f'Chat ID {chat_id} успешно добавлен.')
-                else:
-                        bot.answer_callback_query(call.id, f'Chat ID {chat_id} уже существует.')
-        elif action == 'ignore':
-                bot.answer_callback_query(call.id, f'Запрос от {chat_id} игнорируется.')
+    action, user_id = call.data.split('_')
+    if action == 'add':
+        if user_id not in CHAT_ID:
+            CHAT_ID.append(user_id)
+            bot.answer_callback_query(call.id, f'Chat ID {user_id} успешно добавлен.')
+            bot.send_message(user_id, 'Ваш запрос на добавление был одобрен.')
+        else:
+            bot.answer_callback_query(call.id, f'Chat ID {user_id} уже существует.')
+    elif action == 'ignore':
+        bot.answer_callback_query(call.id, f'Запрос от {user_id} игнорируется.')
+        bot.send_message(user_id, 'Ваш запрос на добавление был отклонен.')
 
-@bot.message_handler(commands=['getmyid'])
+    # Удаляем сообщение с запросом после выбора действия
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+
+
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    if str(message.from_user.id) in trusted_users:
+        help_text = """
+        Доступные команды:
+        /log - Получить файл log.txt, если его размер больше 4KB и ваш chat_id добавлен в список.
+        /add [chat_id] - Добавить новый chat_id в список.
+        /list - Получить список всех chat_id.
+        /del [chat_id] - Удалить chat_id из списка.
+        /id - Получить ваш chat_id.
+        /requestadd - Отправить запрос на добавление вашего chat_id в список.
+        /ban [user_id] - Забанить пользователя.
+        /unban [user_id] - Разбанить пользователя.
+        /timeout [user_id] - Установить таймаут для пользователя.
+        /banlist - Показать список забаненных пользователей.
+        /timeoutlist - Показать список пользователей с таймаутом.
+        """
+    else:
+        help_text = """
+        Доступные команды:
+        /id - Получить ваш chat_id.
+        /requestadd - Отправить запрос на добавление вашего chat_id в список.
+        """
+    bot.reply_to(message, help_text)
+
+@bot.message_handler(commands=['banlist'])
+def show_ban_list(message):
+    if str(message.from_user.id) not in trusted_users:
+        bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
+        return
+
+    if not banned_users:
+        bot.reply_to(message, 'Список забаненных пользователей пуст.')
+    else:
+        ban_list = ', '.join(banned_users)
+        bot.reply_to(message, f'Забаненные пользователи: {ban_list}')
+
+@bot.message_handler(commands=['timeoutlist'])
+def show_timeout_list(message):
+    if str(message.from_user.id) not in trusted_users:
+        bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
+        return
+
+    if not timeouts:
+        bot.reply_to(message, 'Список пользователей с таймаутом пуст.')
+    else:
+        timeout_list = ', '.join(f'{user_id}: {end_time}' for user_id, end_time in timeouts.items())
+        bot.reply_to(message, f'Пользователи с таймаутом: {timeout_list}')
+
+
+@bot.message_handler(commands=['timeout'])
+def timeout_user(message):
+    if str(message.from_user.id) not in trusted_users:
+        bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
+        return
+
+    user_id_to_timeout = message.text.split()[1]  # Получаем user_id из текста сообщения
+    timeout_end = datetime.now() + timedelta(days=1)
+    timeouts[user_id_to_timeout] = timeout_end
+    bot.reply_to(message, f'User ID {user_id_to_timeout} теперь в таймауте до {timeout_end}.')
+
+# Проверяем, находится ли пользователь в таймауте перед обработкой каждого сообщения
+@bot.message_handler(func=lambda message: True)
+def check_timeout(message):
+    user_id = str(message.from_user.id)
+    if user_id in timeouts:
+        if datetime.now() < timeouts[user_id]:
+            return  # Если пользователь в таймауте, просто игнорируем его сообщения
+        else:
+            del timeouts[user_id]
+
+@bot.message_handler(commands=['ban'])
+def ban_user(message):
+    if str(message.from_user.id) not in trusted_users:
+        bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
+        return
+
+    user_id_to_ban = message.text.split()[1]  # Получаем user_id из текста сообщения
+    if user_id_to_ban not in banned_users:
+        banned_users.append(user_id_to_ban)
+        bot.reply_to(message, f'User ID {user_id_to_ban} успешно забанен.')
+        bot.send_message(user_id_to_ban, 'Вы были забанены.')
+    else:
+        bot.reply_to(message, f'User ID {user_id_to_ban} уже забанен.')
+
+# Проверяем, забанен ли пользователь перед обработкой каждого сообщения
+@bot.message_handler(func=lambda message: True)
+def check_ban(message):
+    if str(message.from_user.id) in banned_users:
+        return 
+
+@bot.message_handler(commands=['id'])
 def get_my_id(message):
     bot.reply_to(message, f'Ваш chat_id: {message.chat.id}')
 
@@ -114,9 +199,7 @@ def add_chat_id(message):
 def send_file(message):
     chat_id = str(message.chat.id)
     if chat_id not in CHAT_ID:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("Попросить доступ", callback_data='requestadd'))
-        bot.send_message(chat_id, 'Ваш chat_id не добавлен в список.', reply_markup=markup)
+        bot.send_message(chat_id, 'Ваш chat_id не добавлен в список. Используйте команду /requestadd, чтобы запросить доступ.')
         return
 
     file_path = 'log.txt'
@@ -126,17 +209,7 @@ def send_file(message):
         with open(file_path, 'rb') as file:
             bot.send_document(chat_id, file)
 
-@bot.callback_query_handler(func=lambda call: call.data == 'requestadd')
-def request_add(call):
-    request_text = f'Пользователь {call.from_user.username} ({call.message.chat.id}) хочет добавить себя в список.'
-
-    markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton("Разрешить", callback_data=f'add_{call.message.chat.id}'),
-        types.InlineKeyboardButton("Игнорировать", callback_data=f'ignore_{call.message.chat.id}')
-    )
-
-    bot.send_message(your_chat_id, request_text, reply_markup=markup)
+bot.polling()
 
 ## Обновленное событие для логирования входа в голосовой канал
 @client.event
