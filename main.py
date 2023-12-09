@@ -1,27 +1,35 @@
 from keep_alive import keep_alive
 keep_alive()
 #import
+import json
+import requests
 import os
 import threading
 import telebot
 from telebot import types
-from datetime import datetime
+from datetime import datetime , timedelta
 import pytz
 import discord
+from discord import Permissions
+from discord.utils import oauth_url
 from discord.ext import commands
-from cryptography.fernet import Fernet
-import re
-import asyncio
+import time
+from asyncio import run_coroutine_threadsafe
+
+
+user_chat_ids = {}
+banned_channels = ['1143915567548485766', '1144234201063895110', '1144234201063895110']
 
 intents = discord.Intents.all()
 client = commands.Bot(command_prefix='!', intents=intents)
 #telegram code 
 token = os.environ['token']
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-trusted_users = '2023014289'
-CHAT_ID = ['2023014289','2106774730', '6697778630']
-banned_users = []
-timeouts = {}
+trusted_users = ['2023014289']
+CHAT_ID = ['2023014289']
+
+YOUR_API_KEY = os.environ['YOUR_API_KEY']
+
 
 @client.event
 async def on_ready():
@@ -29,6 +37,10 @@ async def on_ready():
 	
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
+@client.event
+async def on_message(message):
+		if str(message.channel.id) in banned_channels:
+				return
 def send_file_to_telegram(file_path):
 	try:
 			with open(file_path, 'rb') as file:
@@ -64,7 +76,7 @@ def send_help(message):
 				"""
 		else:
 				help_text = """
-				Вас нет в списке chat_id. Вы можете купить chat_id, перейдя по следующей ссылке: [ссылка на платежную систему]
+				Вас нет в списке chat_id
 				"""
 		bot.reply_to(message, help_text)
 #file
@@ -126,31 +138,41 @@ def remove_chat_id(message):
 #list 
 @bot.message_handler(commands=['list'])
 def get_chat_ids(message):
-    if str(message.from_user.id) not in trusted_users:
-        bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
-        return
+		if str(message.from_user.id) not in trusted_users:
+				bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
+				return
 
-    # Create an inline keyboard
-    markup = types.InlineKeyboardMarkup()
+		# Create an inline keyboard
+		markup = types.InlineKeyboardMarkup()
 
-    # Add a button for each chat ID, allowing the administrator to choose which one to remove
-    for chat_id in CHAT_ID:
-        button = types.InlineKeyboardButton(f"Удалить {chat_id}", callback_data=f"delete_{chat_id}")
-        markup.add(button)
+		# Add a button for each chat ID, allowing the administrator to choose which one to remove
+		for chat_id in CHAT_ID:
+				chat = bot.get_chat(chat_id)
+				username = chat.username if chat.username else "No username"
+				button = types.InlineKeyboardButton(f"Удалить {username} ({chat_id})", callback_data=f"delete_{chat_id}")
+				markup.add(button)
 
-    bot.reply_to(message, 'Выберите chat_id для удаления:', reply_markup=markup)
-
+		bot.reply_to(message, 'Выберите chat_id для удаления:', reply_markup=markup)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
 def delete_chat_id(call):
-    chat_id_to_delete = call.data.split('_')[1]  # Extract the chat ID to be deleted from the callback data
-    if chat_id_to_delete in CHAT_ID:
-        CHAT_ID.remove(chat_id_to_delete)
-        bot.answer_callback_query(call.id, f'Chat ID {chat_id_to_delete} успешно удален.')
-    else:
-        bot.answer_callback_query(call.id, f'Chat ID {chat_id_to_delete} не найден.')
+		chat_id_to_delete = call.data.split('_')[1]  # Extract the chat ID from the callback data
 
-    # Optionally, update the user interface with the modified list
-    # You can send an updated list or perform any other necessary action
+		if chat_id_to_delete in CHAT_ID:
+				CHAT_ID.remove(chat_id_to_delete)
+				bot.answer_callback_query(call.id, f'Chat ID {chat_id_to_delete} был удален.')
+
+				# Create a new inline keyboard with the updated list of chat IDs
+				markup = types.InlineKeyboardMarkup()
+				for chat_id in CHAT_ID:
+						chat = bot.get_chat(chat_id)
+						username = chat.username if chat.username else "No username"
+						button = types.InlineKeyboardButton(f"Удалить {username} ({chat_id})", callback_data=f"delete_{chat_id}")
+						markup.add(button)
+
+				# Update the message's reply markup
+				bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+		else:
+				bot.answer_callback_query(call.id, f'Chat ID {chat_id_to_delete} не найден.')
 #add
 @bot.message_handler(commands=['add'])
 def add_chat_id(message):
@@ -170,60 +192,6 @@ def add_chat_id(message):
 		else:
 				bot.reply_to(message, f'Chat ID {new_chat_id} уже существует.')
 
-#kick
-@bot.message_handler(commands=['kick'])
-def kick_from_voice_channel(message):
-		if str(message.from_user.id) not in trusted_users:
-				bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
-				return
-
-		# Создаем кнопки для каждого сервера
-		markup = types.InlineKeyboardMarkup()
-		for guild in client.guilds:
-				markup.add(types.InlineKeyboardButton(guild.name, callback_data=f'kick_guild_{guild.id}'))
-
-		bot.send_message(message.chat.id, "Выберите сервер:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
-		if call.data.startswith('kick_guild_'):
-				_, guild_id, *_ = call.data.split('_')
-
-				# Создаем кнопки для каждого голосового канала на сервере
-				markup = types.InlineKeyboardMarkup()
-				guild = client.get_guild(int(guild_id))
-				for channel in guild.voice_channels:
-						markup.add(types.InlineKeyboardButton(channel.name, callback_data=f'kick_channel_{guild_id}_{channel.id}'))
-
-				bot.edit_message_text("Выберите голосовой канал:", call.message.chat.id, call.message.message_id, reply_markup=markup)
-
-		elif call.data.startswith('kick_channel_'):
-				_, guild_id, channel_id, *_ = call.data.split('_')
-
-				# Создаем кнопки для каждого пользователя в голосовом канале
-				markup = types.InlineKeyboardMarkup()
-				channel = client.get_channel(int(channel_id))
-				for member in channel.members:
-						markup.add(types.InlineKeyboardButton(member.name, callback_data=f'kick_member_{guild_id}_{channel_id}_{member.id}'))
-
-				bot.edit_message_text("Выберите пользователя:", call.message.chat.id, call.message.message_id, reply_markup=markup)
-
-		elif call.data.startswith('kick_member_'):
-				_, guild_id, channel_id, user_id, *_ = call.data.split('_')
-
-				# Находим пользователя и голосовой канал
-				user = client.get_user(int(user_id))
-				channel = client.get_channel(int(channel_id))
-
-				if user and channel and isinstance(channel, discord.VoiceChannel):
-						# Если пользователь находится в голосовом канале, кикаем его
-						if user in channel.members:
-								asyncio.run_coroutine_threadsafe(user.move_to(None), client.loop)
-								bot.answer_callback_query(call.id, f'Пользователь {user_id} был кикнут из голосового канала {channel_id}.')
-						else:
-								bot.answer_callback_query(call.id, f'Пользователь {user_id} не находится в голосовом канале {channel_id}.')
-				else:
-						bot.answer_callback_query(call.id, 'Не удалось найти пользователя или голосовой канал.')
 #log 
 
 @bot.message_handler(commands=['log'])
@@ -249,9 +217,7 @@ async def on_voice_state_update(member, before, after):
 				elif before.channel:  # If the member left the voice channel
 						if before.channel.guild:  # Ensure that the voice channel belonged to a guild
 								log_message(f'{before.channel.guild} - {member} вышел из голосового канала {before.channel}.')
-
-
-
+#
 @client.event
 async def on_message(message):
 		# Логируем все сообщения в текстовый файл
