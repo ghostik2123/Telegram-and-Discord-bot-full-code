@@ -1,24 +1,33 @@
 from keep_alive import keep_alive
 keep_alive()
 #import
+import logging
 import json
 import requests
+import re
 import os
 import threading
+#telgram
 import telebot
 from telebot import types
 from datetime import datetime , timedelta
 import pytz
+#discord
 import discord
 from discord import Permissions
 from discord.utils import oauth_url
 from discord.ext import commands
-import time
-from asyncio import run_coroutine_threadsafe
-
+import asyncio
+#crypt
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from Crypto.Protocol.KDF import PBKDF2
+from Crypto.Util.Padding import pad, unpad
 
 user_chat_ids = {}
 banned_channels = ['1143915567548485766', '1144234201063895110', '1144234201063895110']
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 intents = discord.Intents.all()
 client = commands.Bot(command_prefix='!', intents=intents)
@@ -27,10 +36,7 @@ token = os.environ['token']
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 trusted_users = ['2023014289']
 CHAT_ID = ['2023014289']
-
-YOUR_API_KEY = os.environ['YOUR_API_KEY']
-
-
+crypto_key = os.environ['crypto_key']
 @client.event
 async def on_ready():
 		print(f'вошли в систему под именем {client.user}')
@@ -122,6 +128,120 @@ def ignore_request(message):
 @bot.message_handler(commands=['id'])
 def get_my_id(message):
 		bot.reply_to(message, f'Ваш chat_id: {message.chat.id}')
+#
+@bot.message_handler(commands=['serverinfo'])
+def get_server_info(message):
+		words = message.text.split()
+		if len(words) < 2:
+				bot.reply_to(message, 'Вы не указали ID сервера.')
+				return
+
+		server_id = int(words[1])  # Получаем ID сервера из текста сообщения
+		guild = client.get_guild(server_id)
+		if guild is None:
+				bot.reply_to(message, f'Сервер с ID {server_id} не найден.')
+		else:
+				# Создаем файл channels.txt и записываем в него информацию о каналах
+				with open('channels.txt', 'w') as file:
+						file.write(f"Текстовые каналы на сервере {guild.name}:\n")
+						for channel in guild.text_channels:
+								file.write(f"{channel.name} (ID: {channel.id})\n")
+						file.write("\nГолосовые каналы на сервере:\n")
+						for channel in guild.voice_channels:
+								file.write(f"{channel.name} (ID: {channel.id})\n")
+
+				# Отправляем файл
+				with open('channels.txt', 'rb') as file:
+						bot.send_document(message.chat.id, file)
+
+				# Удаляем файл
+				os.remove('channels.txt')
+
+#
+@bot.message_handler(commands=['createinvite'])
+def create_invite(message):
+		words = message.text.split()
+		if len(words) < 2:
+				bot.reply_to(message, 'Вы не указали ID сервера.')
+				return
+
+		server_id = int(words[1])  # Получаем ID сервера из текста сообщения
+		guild = client.get_guild(server_id)
+		if guild is None:
+				bot.reply_to(message, f'Сервер с ID {server_id} не найден.')
+		else:
+				# Создаем приглашение для первого канала на сервере
+				for channel in guild.channels:
+						if isinstance(channel, discord.TextChannel):
+								invite = asyncio.run_coroutine_threadsafe(channel.create_invite(), client.loop).result()
+								bot.reply_to(message, f'Приглашение на сервер {guild.name} создано: {invite.url}')
+								break
+#ban
+@bot.message_handler(commands=['ban'])
+def ban_user(message):
+		args = message.text.split()
+		if len(args) < 4:
+				bot.reply_to(message, "Недостаточно аргументов.")
+		else:
+				server_id = args[1]
+				member_id = args[2]
+				reason = ' '.join(args[3:])
+				# Здесь вы можете вызвать функцию или метод, которая связывает вашего бота Telegram с ботом Discord
+				# ban_in_discord(server_id, member_id, reason)
+
+# send id 
+@bot.message_handler(commands=['send_id'])
+def send_id_file_as_code(message):
+		chat_id = str(message.chat.id)
+		if chat_id not in CHAT_ID:
+				bot.send_message(chat_id, 'Ваш chat_id не добавлен в список. Используйте команду /requestadd, чтобы запросить доступ.')
+				return
+
+		file_path = 'id.txt'
+		if not os.path.exists(file_path):
+				bot.send_message(chat_id, "Файл id.txt не найден.")
+		else:
+				with open(file_path, 'r', encoding='utf-8') as file:  # Открываем файл в текстовом режиме
+						file_content = "```\n" + file.read() + "\n```"  # Заключаем содержимое файла в блок кода
+						bot.send_message(chat_id, file_content, parse_mode='Markdown')  # Отправляем содержимое файла как блок кода
+# create 
+@bot.message_handler(commands=['create'])
+def create_channel(message):
+		words = message.text.split()
+		if len(words) < 3:
+				bot.reply_to(message, 'Вы не указали ID сервера или имя канала.')
+				return
+
+		server_id = int(words[1])  # Получаем ID сервера из текста сообщения
+		channel_name = words[2]  # Получаем имя канала из текста сообщения
+		guild = client.get_guild(server_id)
+		if guild is None:
+				bot.reply_to(message, f'Сервер с ID {server_id} не найден.')
+		else:
+				asyncio.run_coroutine_threadsafe(guild.create_text_channel(channel_name), client.loop)
+				bot.reply_to(message, f'Канал {channel_name} успешно создан на сервере {guild.name}.')
+
+@bot.message_handler(commands=['remove'])
+def delete_channel(message):
+		words = message.text.split()
+		if len(words) < 3:
+				bot.reply_to(message, 'Вы не указали ID сервера или ID канала.')
+				return
+
+		server_id = int(words[1])  # Получаем ID сервера из текста сообщения
+		channel_id = int(words[2])  # Получаем ID канала из текста сообщения
+		guild = client.get_guild(server_id)
+		if guild is None:
+				bot.reply_to(message, f'Сервер с ID {server_id} не найден.')
+		else:
+				channel = guild.get_channel(channel_id)
+				if channel is None:
+						bot.reply_to(message, f'Канал с ID {channel_id} не найден на сервере {guild.name}.')
+				else:
+						asyncio.run_coroutine_threadsafe(channel.delete(), client.loop)
+						bot.reply_to(message, f'Канал {channel.name} успешно удален с сервера {guild.name}.')
+
+
 #del
 @bot.message_handler(commands=['del'])
 def remove_chat_id(message):
@@ -193,7 +313,6 @@ def add_chat_id(message):
 				bot.reply_to(message, f'Chat ID {new_chat_id} уже существует.')
 
 #log 
-
 @bot.message_handler(commands=['log'])
 def send_file(message):
 		chat_id = str(message.chat.id)
@@ -202,21 +321,11 @@ def send_file(message):
 				return
 
 		file_path = 'log.txt'
-		if os.path.getsize(file_path) <= 4096:  # 4 KB = 4096 bytes
+		if os.path.getsize(file_path) <= 120:  #
 				bot.send_message(chat_id, "Лог еще пустой.")
 		else:
 				with open(file_path, 'rb') as file:
 						bot.send_document(chat_id, file)
-## Обновленное событие для логирования входа в голосовой канал
-@client.event
-async def on_voice_state_update(member, before, after):
-		if before.channel != after.channel:  # Check if the voice channel has changed
-				if after.channel:  # If the member entered a voice channel
-						if after.channel.guild:  # Ensure that the voice channel belongs to a guild
-								log_message(f'{after.channel.guild} - {member} вошел в голосовой канал {after.channel}.')
-				elif before.channel:  # If the member left the voice channel
-						if before.channel.guild:  # Ensure that the voice channel belonged to a guild
-								log_message(f'{before.channel.guild} - {member} вышел из голосового канала {before.channel}.')
 #
 @client.event
 async def on_message(message):
