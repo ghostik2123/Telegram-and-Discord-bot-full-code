@@ -1,8 +1,6 @@
 from keep_alive import keep_alive
 keep_alive()
 #import
-import logging
-import json
 import requests
 import re
 import os
@@ -21,13 +19,14 @@ import asyncio
 #crypt
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
-from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Util.Padding import pad, unpad
+import json
 
-user_chat_ids = {}
-banned_channels = ['1143915567548485766', '1144234201063895110', '1144234201063895110']
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+banned_words = []
+
+KEY = get_random_bytes(16)  # Генерируем ключ для шифрования
+cipher = AES.new(KEY, AES.MODE_ECB)  # Создаем объект шифрования
 
 intents = discord.Intents.all()
 client = commands.Bot(command_prefix='!', intents=intents)
@@ -42,23 +41,6 @@ async def on_ready():
 		print(f'вошли в систему под именем {client.user}')
 	
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-
-@client.event
-async def on_message(message):
-		if str(message.channel.id) in banned_channels:
-				return
-def send_file_to_telegram(file_path):
-	try:
-			with open(file_path, 'rb') as file:
-					for chat_id in CHAT_ID:
-							bot.send_document(chat_id, file)
-	except Exception as e:
-			print(f'Ошибка отправки файла в Telegram: {e}')
-
-file_size = os.path.getsize('log.txt')
-if file_size >= 100 * 1024:  # Если размер файла превышает 100 МБ (100кб)
-	send_file_to_telegram('log.txt')
-	open('log.txt', 'w').close()
 
 #telegram commands
 @bot.message_handler(commands=['help'])
@@ -85,6 +67,40 @@ def send_help(message):
 				Вас нет в списке chat_id
 				"""
 		bot.reply_to(message, help_text)
+
+# Функция для шифрования списка слов
+def encrypt_words(words):
+		data = ' '.join(words)  # Преобразуем список в строку
+		encrypted_data = cipher.encrypt(pad(data.encode(), 16))  # Шифруем данные
+		with open('words.txt', 'wb') as file:  # Сохраняем зашифрованные данные в файл
+				file.write(encrypted_data)
+
+# Функция для загрузки и дешифрования списка слов
+def load_words():
+	try:
+			with open('words.txt', 'rb') as file:  # Загружаем зашифрованные данные из файла
+					encrypted_data = file.read()
+			if not encrypted_data:  # Если файл пуст, возвращаем пустой список
+					return []
+			data = unpad(cipher.decrypt(encrypted_data), 16).decode()  # Дешифруем данные
+			return data.split()  # Преобразуем строку обратно в список
+	except FileNotFoundError:  # Если файл не найден, возвращаем пустой список
+			return []
+
+@bot.message_handler(commands=['lock'])
+def lock_word(message):
+		words = message.text.split()
+		if len(words) < 2:
+				bot.reply_to(message, 'Вы не указали слово для блокировки.')
+				return
+		word = words[1]
+		if word not in banned_words:
+				banned_words.append(word)
+				encrypt_words(banned_words)  # Сохраняем обновленный список слов
+				bot.reply_to(message, f'Слово "{word}" успешно заблокировано.')
+		else:
+				bot.reply_to(message, f'Слово "{word}" уже заблокировано.')
+
 #file
 @bot.message_handler(commands=['file'])
 def get_file_size(message):
@@ -156,15 +172,13 @@ def get_server_info(message):
 
 				# Удаляем файл
 				os.remove('channels.txt')
-
 #
 @bot.message_handler(commands=['createinvite'])
-def create_invite(message):
+async def create_invite(message):
 		words = message.text.split()
 		if len(words) < 2:
 				bot.reply_to(message, 'Вы не указали ID сервера.')
 				return
-
 		server_id = int(words[1])  # Получаем ID сервера из текста сообщения
 		guild = client.get_guild(server_id)
 		if guild is None:
@@ -173,25 +187,12 @@ def create_invite(message):
 				# Создаем приглашение для первого канала на сервере
 				for channel in guild.channels:
 						if isinstance(channel, discord.TextChannel):
-								invite = asyncio.run_coroutine_threadsafe(channel.create_invite(), client.loop).result()
+								invite = await channel.create_invite()
 								bot.reply_to(message, f'Приглашение на сервер {guild.name} создано: {invite.url}')
 								break
-#ban
-@bot.message_handler(commands=['ban'])
-def ban_user(message):
-		args = message.text.split()
-		if len(args) < 4:
-				bot.reply_to(message, "Недостаточно аргументов.")
-		else:
-				server_id = args[1]
-				member_id = args[2]
-				reason = ' '.join(args[3:])
-				# Здесь вы можете вызвать функцию или метод, которая связывает вашего бота Telegram с ботом Discord
-				# ban_in_discord(server_id, member_id, reason)
-
 # send id 
 @bot.message_handler(commands=['send_id'])
-def send_id_file_as_code(message):
+def send_id_file(message):
 		chat_id = str(message.chat.id)
 		if chat_id not in CHAT_ID:
 				bot.send_message(chat_id, 'Ваш chat_id не добавлен в список. Используйте команду /requestadd, чтобы запросить доступ.')
@@ -201,9 +202,8 @@ def send_id_file_as_code(message):
 		if not os.path.exists(file_path):
 				bot.send_message(chat_id, "Файл id.txt не найден.")
 		else:
-				with open(file_path, 'r', encoding='utf-8') as file:  # Открываем файл в текстовом режиме
-						file_content = "```\n" + file.read() + "\n```"  # Заключаем содержимое файла в блок кода
-						bot.send_message(chat_id, file_content, parse_mode='Markdown')  # Отправляем содержимое файла как блок кода
+				with open(file_path, 'rb') as file:
+						bot.send_document(chat_id, file)
 # create 
 @bot.message_handler(commands=['create'])
 def create_channel(message):
@@ -327,6 +327,19 @@ def send_file(message):
 				with open(file_path, 'rb') as file:
 						bot.send_document(chat_id, file)
 #
+
+
+@client.event
+async def on_voice_state_update(member, before, after):
+		if before.channel != after.channel:  # Check if the voice channel has changed
+				if after.channel:  # If the member entered a voice channel
+						if after.channel.guild:  # Ensure that the voice channel belongs to a guild
+								log_message(f'{after.channel.guild} - {member} вошел в голосовой канал {after.channel}.')
+				elif before.channel:  # If the member left the voice channel
+						if before.channel.guild:  # Ensure that the voice channel belonged to a guild
+								log_message(f'{before.channel.guild} - {member} вышел из голосового канала {before.channel}.')
+
+
 @client.event
 async def on_message(message):
 		# Логируем все сообщения в текстовый файл
