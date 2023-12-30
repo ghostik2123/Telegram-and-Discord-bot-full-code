@@ -4,6 +4,7 @@ keep_alive()
 import requests
 import re
 import os
+import time
 import threading
 #telgram
 import telebot
@@ -17,30 +18,55 @@ from discord.utils import oauth_url
 from discord.ext import commands
 import asyncio
 #crypt
-from Crypto.Cipher import AES
-from Crypto.Random import get_random_bytes
-from Crypto.Util.Padding import pad, unpad
-import json
+Mongo = os.environ.get("Mongo")
+# Подключение к базе данных MongoDB
+from pymongo import MongoClient
+# Подключение к базе данных MongoDB
+connection_string = os.getenv('MONGODB_CONNECTION_STRING')
+if connection_string is None:
+		raise Exception('MongoDB connection string not found in environment variable.')
+# Подключение к базе данных MongoDB
 
+try:
+	client = MongoClient(connection_string)
+	db = client['chat_app']
 
-banned_words = []
+	# Check if 'users' collection exists, create if not
+	if 'users' not in db.list_collection_names():
+			db.create_collection('users')
 
-KEY = get_random_bytes(16)  # Генерируем ключ для шифрования
-cipher = AES.new(KEY, AES.MODE_ECB)  # Создаем объект шифрования
+	# Check if 'banned_words' collection exists, create if not
+	if 'banned_words' not in db.list_collection_names():
+			db.create_collection('banned_words')
+
+	# Set collection variables
+	users_collection = db['users']
+	words_collection = db['banned_words']
+
+	mongo_connected = True
+	print('Connected to MongoDB!')
+except Exception as e:
+	print('Error connecting to MongoDB:', e)
+	mongo_connected = False
+
+discord_webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
 
 intents = discord.Intents.all()
 client = commands.Bot(command_prefix='!', intents=intents)
 #telegram code 
 token = os.environ['token']
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-trusted_users = ['2023014289']
+trusted_users = ['2023014289','6080379057']
 CHAT_ID = ['2023014289']
-crypto_key = os.environ['crypto_key']
+admin_chat_id = ['2023014289']
+
 @client.event
 async def on_ready():
 		print(f'вошли в систему под именем {client.user}')
 	
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
+
 
 #telegram commands
 @bot.message_handler(commands=['help'])
@@ -52,9 +78,7 @@ def send_help(message):
 				/log - Получить файл log.txt, если его размер больше 4KB и ваш chat_id добавлен в список.
 				/add [chat_id] - Добавить новый chat_id в список.
 				/list - Получить список всех chat_id.
-				/del [chat_id] - Удалить chat_id из списка.
 				/id - Получить ваш chat_id.
-				/requestadd - Отправить запрос на добавление вашего chat_id в список.
 				"""
 		elif chat_id in CHAT_ID:
 				help_text = """
@@ -68,78 +92,193 @@ def send_help(message):
 				"""
 		bot.reply_to(message, help_text)
 
-# Функция для шифрования списка слов
-def encrypt_words(words):
-		data = ' '.join(words)  # Преобразуем список в строку
-		encrypted_data = cipher.encrypt(pad(data.encode(), 16))  # Шифруем данные
-		with open('words.txt', 'wb') as file:  # Сохраняем зашифрованные данные в файл
-				file.write(encrypted_data)
+@bot.message_handler(commands=['give_subscription'])
+def give_subscription_command(message):
+		try:
+				chat_id = str(message.chat.id)
+				if chat_id not in trusted_users:
+						bot.reply_to(message, "Вы не являетесь доверенным пользователем. Команда /give_subscription недоступна.")
+				else:
+						words = message.text.split()
+						if len(words) < 3:
+								bot.reply_to(message, 'Вы не указали пользователя и время подписки.')
+								return
+						user_id = words[1]
+						duration_str = words[2]
 
-# Функция для загрузки и дешифрования списка слов
-def load_words():
-	try:
-			with open('words.txt', 'rb') as file:  # Загружаем зашифрованные данные из файла
-					encrypted_data = file.read()
-			if not encrypted_data:  # Если файл пуст, возвращаем пустой список
-					return []
-			data = unpad(cipher.decrypt(encrypted_data), 16).decode()  # Дешифруем данные
-			return data.split()  # Преобразуем строку обратно в список
-	except FileNotFoundError:  # Если файл не найден, возвращаем пустой список
-			return []
+						if not duration_str[-1].isalpha():
+								bot.reply_to(message, 'Некорректная продолжительность подписки.')
+								return
+
+						duration_value = int(duration_str[:-1])
+						duration_unit = duration_str[-1].lower()
+
+						if duration_value <= 0:
+								bot.reply_to(message, 'Некорректная продолжительность подписки.')
+								return
+
+						if duration_unit == 'h':
+								duration_seconds = duration_value * 3600
+						elif duration_unit == 'm':
+								duration_seconds = duration_value * 60
+						elif duration_unit == 'd':
+								duration_seconds = duration_value * 24 * 3600
+						elif duration_unit == 'w':
+								duration_seconds = duration_value * 7 * 24 * 3600
+						else:
+								bot.reply_to(message, 'Неподдерживаемая единица времени. Допустимые единицы:\nm (минуты)\nh (часы)\nd (дни)\nw (недели).')
+								return
+
+						user = users_collection.find_one({'Chat_id': user_id})
+						current_time = time.time()
+						expiration_time = current_time + duration_seconds
+
+						if user:
+								users_collection.update_one({'Chat_id': user_id}, {'$set': {'subscriptionExpiration': expiration_time}}, upsert=True)
+								bot.reply_to(message, f"Пользователю с ID {user_id} выдана подписка на {duration_value} {duration_unit}.")
+						else:
+								user_nickname = message.from_user.username
+								users_collection.insert_one({'Chat_id': user_id, 'nickname': user_nickname, 'subscriptionExpiration': expiration_time})
+								bot.reply_to(message, f"Пользователю с Chat_id {user_id} и никнеймом {user_nickname} выдана подписка на {duration_value} {duration_unit}.")
+
+		except Exception as e:
+				print('Error handling /give_subscription command:', e)
+
+
+@bot.message_handler(commands=['sub'])
+def show_subscription_buttons(message):
+		try:
+				user_id = str(message.from_user.id)
+				user = users_collection.find_one({'Chat_id': user_id})
+				if user and 'subscriptionExpiration' in user:
+						expiration_time = datetime.fromtimestamp(user['subscriptionExpiration'])
+						remaining_time = expiration_time - datetime.now()
+						if remaining_time > timedelta():
+								days = remaining_time.days
+								hours, remainder = divmod(remaining_time.seconds, 3600)
+								minutes, seconds = divmod(remainder, 60)
+								time_str = f"Дней: {days}, Часов: {hours}, Минут: {minutes}"
+								keyboard = types.InlineKeyboardMarkup()
+								freeze_button = types.InlineKeyboardButton("Заморозить", callback_data=f"freeze_{user_id}")
+								extend_button = types.InlineKeyboardButton("Продлить", callback_data=f"extend_{user_id}")
+								keyboard.add(freeze_button, extend_button)
+								bot.reply_to(message, f"Ваша подписка действительна. Осталось времени: {time_str}", reply_markup=keyboard)
+						else:
+								keyboard = types.InlineKeyboardMarkup()
+								unfreeze_button = types.InlineKeyboardButton("Разморозить", callback_data=f"unfreeze_{user_id}")
+								keyboard.add(unfreeze_button)
+								bot.reply_to(message, "Ваша подписка заморожена.", reply_markup=keyboard)
+				else:
+						bot.reply_to(message, "У вас нет активной подписки.")
+		except Exception as e:
+				print('Error handling /sub command:', e)
+
 
 @bot.message_handler(commands=['lock'])
 def lock_word(message):
+		try:
+				# Check if the user's chat_id is the admin_chat_id
+				if str(message.chat.id) == admin_chat_id:
+						# Handle admin's command without subscription check
+						words = message.text.split()
+						if len(words) < 2:
+								bot.reply_to(message, 'Вы не указали слово для блокировки.')
+								return
+						word = words[1]
+						if not words_collection.find_one({'word': word}):
+								words_collection.insert_one({'word': word})  # Сохраняем слово в базе данных
+								bot.reply_to(message, f'Слово "{word}" успешно заблокировано.')
+								# Replace word with "SECRETS" in log.txt file if found in the database
+								with open('log.txt', 'r') as file:
+										file_data = file.read()
+										file_data = file_data.replace(word, 'SECRETS')
+								with open('log.txt', 'w') as file:
+										file.write(file_data)
+						else:
+								bot.reply_to(message, f'Слово "{word}" уже заблокировано.')
+				else:
+						words = message.text.split()
+						if len(words) < 2:
+								bot.reply_to(message, 'Вы не указали слово для блокировки.')
+								return
+						word = words[1]
+						user_id = str(message.from_user.id)
+						user = users_collection.find_one({'id': user_id})
+						if user and 'subscriptionExpiration' in user and user['subscriptionExpiration'] > time.time():
+								if not words_collection.find_one({'word': word}):
+										words_collection.insert_one({'word': word})  # Сохраняем слово в базе данных
+										bot.reply_to(message, f'Слово "{word}" успешно заблокировано.')
+										# Replace word with "SECRETS" in log.txt file if found in the database
+										with open('log.txt', 'r') as file:
+												file_data = file.read()
+												file_data = file_data.replace(word, 'SECRETS')
+										with open('log.txt', 'w') as file:
+												file.write(file_data)
+								else:
+										bot.reply_to(message, f'Слово "{word}" уже заблокировано.')
+						else:
+								bot.reply_to(message, "У вас нет активной подписки. Команда /lock недоступна.")
+
+				# Check if words_collection is empty and add "TEST" if it is
+				if words_collection.count_documents({}) == 0:
+						test_word = "TEST"
+						words_collection.insert_one({'word': test_word})
+						print(f'Добавлено слово "{test_word}" в words_collection.')
+
+		except Exception as e:
+				print('Error handling /lock command:', e)
+
+def check_and_replace_words():
+	while True:
+			try:
+					with open('log.txt', 'r') as file:
+							file_data = file.read()
+
+					for word in words_collection.find():
+							if word['word'] in file_data:
+									file_data = file_data.replace(word['word'], 'SECRETS')
+
+					with open('log.txt', 'w') as file:
+							file.write(file_data)
+
+			except Exception as e:
+					print('Error checking and replacing words:', e)
+
+			time.sleep(1)
+
+checker_thread = threading.Thread(target=check_and_replace_words)
+checker_thread.start()
+
+
+@bot.message_handler(commands=['createwebhook'])
+def create_webhook(message):
+		chat_id = str(message.chat.id)
+		if chat_id not in trusted_users and chat_id not in CHAT_ID:
+				bot.send_message(chat_id, 'Ваш chat_id не добавлен в список. Используйте команду /requestadd, чтобы запросить доступ.')
+				return
+
 		words = message.text.split()
 		if len(words) < 2:
-				bot.reply_to(message, 'Вы не указали слово для блокировки.')
+				bot.reply_to(message, 'Вы не указали ID сервера.')
 				return
-		word = words[1]
-		if word not in banned_words:
-				banned_words.append(word)
-				encrypt_words(banned_words)  # Сохраняем обновленный список слов
-				bot.reply_to(message, f'Слово "{word}" успешно заблокировано.')
-		else:
-				bot.reply_to(message, f'Слово "{word}" уже заблокировано.')
 
+		server_id = int(words[1])  # Получаем ID сервера из текста сообщения
+		guild = client.get_guild(server_id)
+		if guild is None:
+				bot.reply_to(message, f'Сервер с ID {server_id} не найден.')
+		else:
+				# Создаем webhook для первого канала на сервере
+				for channel in guild.channels:
+						if isinstance(channel, discord.TextChannel):
+								future = asyncio.run_coroutine_threadsafe(channel.create_webhook(name="My Webhook"), client.loop)
+								webhook = future.result()
+								bot.reply_to(message, f'Webhook для сервера {guild.name} создан: {webhook.url}')
+								break
 #file
 @bot.message_handler(commands=['file'])
 def get_file_size(message):
 		file_size = os.path.getsize('log.txt')
 		bot.reply_to(message, f'Размер файла log.txt: {file_size} байт')
-
-#reque
-@bot.message_handler(commands=['requestadd'])
-def request_add(message):
-		global last_request_chat_id
-		last_request_chat_id = str(message.chat.id)
-		request_text = f'Пользователь {message.from_user.username} ({last_request_chat_id}) хочет добавить себя в список. Ответьте командой /accept для разрешения или /ignore для игнорирования.'
-		bot.send_message(trusted_users, request_text)
-
-@bot.message_handler(commands=['accept'])
-def accept_request(message):
-		global last_request_chat_id
-		if str(message.from_user.id) not in trusted_users or last_request_chat_id is None:
-				bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
-				return
-
-		if last_request_chat_id not in CHAT_ID:
-				CHAT_ID.append(last_request_chat_id)
-				bot.reply_to(message, f'Chat ID {last_request_chat_id} успешно добавлен.')
-				bot.send_message(last_request_chat_id, 'Ваш запрос на добавление был одобрен.')
-				last_request_chat_id = None
-		else:
-				bot.reply_to(message, f'Chat ID {last_request_chat_id} уже существует.')
-
-@bot.message_handler(commands=['ignore'])
-def ignore_request(message):
-		global last_request_chat_id
-		if str(message.from_user.id) not in trusted_users or last_request_chat_id is None:
-				bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
-				return
-
-		bot.reply_to(message, f'Запрос от {last_request_chat_id} игнорируется.')
-		bot.send_message(last_request_chat_id, 'Ваш запрос на добавление был отклонен.')
-		last_request_chat_id = None
 #id 
 @bot.message_handler(commands=['id'])
 def get_my_id(message):
@@ -195,7 +334,7 @@ async def create_invite(message):
 def send_id_file(message):
 		chat_id = str(message.chat.id)
 		if chat_id not in CHAT_ID:
-				bot.send_message(chat_id, 'Ваш chat_id не добавлен в список. Используйте команду /requestadd, чтобы запросить доступ.')
+				bot.send_message(chat_id, 'Ваш chat_id не добавлен в список.')
 				return
 
 		file_path = 'id.txt'
@@ -240,92 +379,27 @@ def delete_channel(message):
 				else:
 						asyncio.run_coroutine_threadsafe(channel.delete(), client.loop)
 						bot.reply_to(message, f'Канал {channel.name} успешно удален с сервера {guild.name}.')
-
-
-#del
-@bot.message_handler(commands=['del'])
-def remove_chat_id(message):
-		if str(message.from_user.id) not in trusted_users:
-				bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
-				return
-
-		chat_id_to_remove = message.text.split()[1]  # Получаем chat_id из текста сообщения
-		if chat_id_to_remove in CHAT_ID:
-				CHAT_ID.remove(chat_id_to_remove)
-				bot.reply_to(message, f'Chat ID {chat_id_to_remove} успешно удален.')
-		else:
-				bot.reply_to(message, f'Chat ID {chat_id_to_remove} не найден.')
-#list 
-@bot.message_handler(commands=['list'])
-def get_chat_ids(message):
-		if str(message.from_user.id) not in trusted_users:
-				bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
-				return
-
-		# Create an inline keyboard
-		markup = types.InlineKeyboardMarkup()
-
-		# Add a button for each chat ID, allowing the administrator to choose which one to remove
-		for chat_id in CHAT_ID:
-				chat = bot.get_chat(chat_id)
-				username = chat.username if chat.username else "No username"
-				button = types.InlineKeyboardButton(f"Удалить {username} ({chat_id})", callback_data=f"delete_{chat_id}")
-				markup.add(button)
-
-		bot.reply_to(message, 'Выберите chat_id для удаления:', reply_markup=markup)
-@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
-def delete_chat_id(call):
-		chat_id_to_delete = call.data.split('_')[1]  # Extract the chat ID from the callback data
-
-		if chat_id_to_delete in CHAT_ID:
-				CHAT_ID.remove(chat_id_to_delete)
-				bot.answer_callback_query(call.id, f'Chat ID {chat_id_to_delete} был удален.')
-
-				# Create a new inline keyboard with the updated list of chat IDs
-				markup = types.InlineKeyboardMarkup()
-				for chat_id in CHAT_ID:
-						chat = bot.get_chat(chat_id)
-						username = chat.username if chat.username else "No username"
-						button = types.InlineKeyboardButton(f"Удалить {username} ({chat_id})", callback_data=f"delete_{chat_id}")
-						markup.add(button)
-
-				# Update the message's reply markup
-				bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
-		else:
-				bot.answer_callback_query(call.id, f'Chat ID {chat_id_to_delete} не найден.')
-#add
-@bot.message_handler(commands=['add'])
-def add_chat_id(message):
-		if str(message.from_user.id) not in trusted_users:
-				bot.reply_to(message, 'У вас нет прав для выполнения этой команды.')
-				return
-
-		words = message.text.split()
-		if len(words) < 2:
-				bot.reply_to(message, 'Вы не указали chat_id.')
-				return
-
-		new_chat_id = words[1]  # Получаем chat_id из текста сообщения
-		if new_chat_id not in CHAT_ID:
-				CHAT_ID.append(new_chat_id)
-				bot.reply_to(message, f'Chat ID {new_chat_id} успешно добавлен.')
-		else:
-				bot.reply_to(message, f'Chat ID {new_chat_id} уже существует.')
-
-#log 
+			
 @bot.message_handler(commands=['log'])
 def send_file(message):
 		chat_id = str(message.chat.id)
+		user_id = str(message.from_user.id)
+
 		if chat_id not in CHAT_ID:
-				bot.send_message(chat_id, 'Ваш chat_id не добавлен в список. Используйте команду /requestadd, чтобы запросить доступ.')
+				bot.send_message(chat_id, 'Ваш chat_id не добавлен в список.')
 				return
 
-		file_path = 'log.txt'
-		if os.path.getsize(file_path) <= 120:  #
-				bot.send_message(chat_id, "Лог еще пустой.")
+		user = users_collection.find_one({'Chat_id': user_id})
+		if user and 'subscriptionExpiration' in user and user['subscriptionExpiration'] > time.time():
+				file_path = 'log.txt'
+				if os.path.getsize(file_path) <= 120:  #
+						bot.send_message(chat_id, "Лог еще пустой.")
+				else:
+						with open(file_path, 'rb') as file:
+								bot.send_document(chat_id, file)
 		else:
-				with open(file_path, 'rb') as file:
-						bot.send_document(chat_id, file)
+				bot.send_message(chat_id, "У вас нет активной подписки. Команда /log недоступна.")
+
 #
 
 
