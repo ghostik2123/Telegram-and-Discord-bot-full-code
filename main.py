@@ -54,9 +54,9 @@ client = commands.Bot(command_prefix='!', intents=intents)
 #telegram code 
 token = os.environ['token']
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-trusted_users = ['2023014289','6080379057']
-CHAT_ID = ['2023014289']
-admin_chat_id = ['2023014289']
+trusted_users = ['','']
+CHAT_ID = ['']
+admin_chat_id = ['']
 
 @client.event
 async def on_ready():
