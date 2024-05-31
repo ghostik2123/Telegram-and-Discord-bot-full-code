@@ -15,9 +15,7 @@ from discord import Permissions
 from discord.utils import oauth_url
 from discord.ext import commands
 import asyncio
-#crypt
-Mongo = os.environ.get("Mongo")
-# Подключение к базе данных MongoDB
+
 from pymongo import MongoClient
 # Подключение к базе данных MongoDB
 connection_string = os.getenv('MONGODB_CONNECTION_STRING')
